@@ -53,6 +53,8 @@ const (
 	CrownLabsUserID = int64(1010)
 	// SubmissionJobMaxRetries -> max number of retries for submission jobs.
 	SubmissionJobMaxRetries = 10
+	// SubmissionJobTTLSeconds -> seconds for submission jobs before deletion (either failure or success).
+	SubmissionJobTTLSeconds = 300
 	// AppCPULimitsEnvName -> name of the env variable containing AppContainer CPU limits.
 	AppCPULimitsEnvName = "APP_CPU_LIMITS"
 	// AppMEMLimitsEnvName -> name of the env variable containing AppContainer memory limits.
@@ -159,7 +161,8 @@ func PodSpec(instance *clv1alpha2.Instance, environment *clv1alpha2.Environment,
 // SubmissionJobSpec returns the job spec for the submission job.
 func SubmissionJobSpec(instance *clv1alpha2.Instance, environment *clv1alpha2.Environment, opts *ContainerEnvOpts) batchv1.JobSpec {
 	return batchv1.JobSpec{
-		BackoffLimit: pointer.Int32(SubmissionJobMaxRetries),
+		BackoffLimit:            pointer.Int32(SubmissionJobMaxRetries),
+		TTLSecondsAfterFinished: pointer.Int32(SubmissionJobTTLSeconds),
 		Template: corev1.PodTemplateSpec{
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{
@@ -209,7 +212,7 @@ func WebsockifyContainer(opts *ContainerEnvOpts, environment *clv1alpha2.Environ
 	AddContainerArg(&websockifyContainer, "pod-name", fmt.Sprintf("$(%s)", PodNameEnvName))
 	AddContainerArg(&websockifyContainer, "cpu-limit", fmt.Sprintf("$(%s)", AppCPULimitsEnvName))
 	AddContainerArg(&websockifyContainer, "memory-limit", fmt.Sprintf("$(%s)", AppMEMLimitsEnvName))
-	SetContainerReadinessTCPProbe(&websockifyContainer, GUIPortName)
+	SetContainerReadinessHTTPProbe(&websockifyContainer, GUIPortName, IngressGUICleanPath(instance))
 	return websockifyContainer
 }
 
@@ -265,6 +268,9 @@ func AppContainer(instance *clv1alpha2.Instance, environment *clv1alpha2.Environ
 	}
 	if environment.ContainerStartupOptions != nil {
 		appContainer.Args = environment.ContainerStartupOptions.StartupArgs
+		if environment.ContainerStartupOptions.EnforceWorkdir {
+			appContainer.WorkingDir = MyDriveMountPath(environment)
+		}
 	}
 	return appContainer
 }
@@ -470,7 +476,8 @@ func ContainerVolume(volumeName, claimName string, environment *clv1alpha2.Envir
 // NeedsContainerVolume returns true in the cases in which a volume mount could be needed.
 func NeedsContainerVolume(instance *clv1alpha2.Instance, environment *clv1alpha2.Environment) bool {
 	needsInit, _ := NeedsInitContainer(instance, environment)
-	return environment.Mode == clv1alpha2.ModeStandard || environment.Persistent || needsInit
+	enforceWorkDir := environment.ContainerStartupOptions != nil && environment.ContainerStartupOptions.EnforceWorkdir
+	return environment.Mode == clv1alpha2.ModeStandard || environment.Persistent || needsInit || enforceWorkDir
 }
 
 // NeedsInitContainer returns true if the environment requires an initcontainer in order to be prepopulated.
